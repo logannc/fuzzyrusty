@@ -1,5 +1,63 @@
 //! Convenience methods to process fuzzy matching queries for common use cases.
 
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
+use utils::full_process;
+
+/// All of the convenience methods in the `process` module return thresholded _matches_. A match
+/// is a set of text which was matched from the list of choices by the provided scoring function,
+/// along with the score produced by the scoring function.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Match {
+    text: String,
+    score: u8,
+}
+
+impl Match {
+    pub fn new<V: AsRef<str>>(text: V, score: u8) -> Self {
+        Self {
+            text: text.as_ref().to_string(),
+            score,
+        }
+    }
+
+    pub fn score(&self) -> u8 {
+        self.score
+    }
+
+    pub fn text(&self) -> &str {
+        self.text.as_str()
+    }
+}
+
+/// Match ordinality is defined by integer ordinality rules applied on the matches' scores.
+impl Ord for Match {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.cmp(&other.score())
+    }
+}
+
+impl PartialOrd for Match {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.score.partial_cmp(&other.score())
+    }
+}
+
+/// Convenience trait `impl` for converting `("text", 100)` to `Match { text: "text".into(), score: 100 }`.
+impl<V: AsRef<str>> From<(V, u8)> for Match {
+    fn from((text, score): (V, u8)) -> Self {
+        Self::new(text, score)
+    }
+}
+
+/// Convenience trait `impl` for comparing `("text", 100)` with `Match { text: "text".into(), score: 100 }`.
+impl<V: AsRef<str>> PartialEq<(V, u8)> for Match {
+    fn eq(&self, other: &(V, u8)) -> bool {
+        let other_choice = Match::new(other.0.as_ref(), other.1);
+        self.eq(&other_choice)
+    }
+}
+
 /// Score multiple options against a base query string and return all exceeding a cutoff.
 ///
 /// Returns a Vec with the options and their match score if their score is above the cutoff.
@@ -30,20 +88,21 @@
 ///         0),
 ///     expected_results);
 /// ```
-pub fn extract_without_order<I, T, P, S>(
-    query: &str,
+pub fn extract_without_order<I, T, P, S, Q>(
+    query: Q,
     choices: I,
     processor: P,
     scorer: S,
     score_cutoff: u8,
-) -> Vec<(String, u8)>
+) -> Vec<Match>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    Q: AsRef<str>,
     P: Fn(&str, bool) -> String,
     S: Fn(&str, &str, bool, bool) -> u8,
 {
-    let processed_query: String = processor(query, false);
+    let processed_query: String = processor(query.as_ref(), false);
     if processed_query.is_empty() {
         // TODO: Make warning configurable, instead of being printed by default.
         // println!("Applied processor reduces input query to empty string, all comparisons will have score 0. [Query: '{0}']", processed_query.as_str());
@@ -58,7 +117,7 @@ where
         let processed: String = processor(choice.as_ref(), false);
         let score: u8 = scorer(processed_query.as_str(), processed.as_str(), true, true);
         if score >= score_cutoff {
-            results.push((choice.as_ref().to_string(), score))
+            results.push(Match::new(choice, score))
         }
     }
     results
@@ -86,7 +145,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[0]
 /// );
 /// assert_eq!(
@@ -95,7 +154,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[3]
 /// );
 /// assert_eq!(
@@ -104,7 +163,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[2]
 /// );
 /// assert_eq!(
@@ -113,7 +172,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[2]
 /// );
 /// assert_eq!(
@@ -122,24 +181,25 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[0]
 /// );
 /// ```
-pub fn extract_one<I, T, P, S>(
-    query: &str,
+pub fn extract_one<I, T, P, S, Q>(
+    query: Q,
     choices: I,
     processor: P,
     scorer: S,
     score_cutoff: u8,
-) -> Option<(String, u8)>
+) -> Option<Match>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    Q: AsRef<str>,
     P: Fn(&str, bool) -> String,
     S: Fn(&str, &str, bool, bool) -> u8,
 {
-    let best = extract_without_order(query, choices, processor, scorer, score_cutoff);
+    let best = extract_without_order(query.as_ref(), choices, processor, scorer, score_cutoff);
     if best.is_empty() {
         return None;
     }
@@ -153,5 +213,176 @@ where
         // original ordering of `choices` is returned (as this is the behavior of fuzzywuzzy).
         .rev()
         .cloned()
-        .max_by(|(_, acc_score), (_, score)| acc_score.cmp(score))
+        .max_by(|acc_match, other_match| acc_match.score().cmp(&other_match.score()))
+
+}
+
+/// Select the best match in a list or dictionary of choices.
+///
+/// Find best matches in a list or dictionary of choices, return a list of
+/// tuples containing the match and its score. If a dictionary is used, also
+/// returns the key for each match.
+///
+/// ```
+/// # use fuzzywuzzy::process::extract;
+/// # use fuzzywuzzy::fuzz::wratio;
+/// # use fuzzywuzzy::utils::full_process;
+/// let choices = vec![
+///     "train",
+///     "man",
+/// ];
+/// let expected_results = vec![
+///     ("train", 22),
+///     ("man", 0),
+/// ];
+/// assert_eq!(extract("bird", choices, full_process, &wratio, 0, None), expected_results);
+/// ```
+pub fn extract<I, T, P, S, Q>(
+    query: Q,
+    choices: I,
+    processor: P,
+    scorer: S,
+    score_cutoff: u8,
+    limit: Option<u64>,
+) -> Vec<Match>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+    Q: AsRef<str>,
+    P: Fn(&str, bool) -> String,
+    S: Fn(&str, &str, bool, bool) -> u8,
+{
+    let mut matches = extract_without_order(query, choices, processor, scorer, score_cutoff);
+    match limit {
+        None => {
+            // Merge-sorts the matches.
+            matches.sort();
+            // TODO: Does this need to be reversed? It is reversed in the original implementation.
+            // https://github.com/seatgeek/fuzzywuzzy/blob/master/fuzzywuzzy/process.py#L169
+            matches.reverse();
+            matches
+        }
+        Some(limit) => BinaryHeap::from(matches)
+            .into_sorted_vec()
+            .into_iter()
+            .take(limit as usize)
+            .collect(),
+    }
+}
+
+// TODO: Is there any difference between extract_bests and extract?
+// pub fn extract_bests<I, T, P, S, Q>(
+//     query: Q,
+//     choices: I,
+//     processor: P,
+//     scorer: S,
+//     score_cutoff: u8,
+//     limit: Option<u64>,
+// ) -> Vec<Match>
+// where
+//     I: IntoIterator<Item = T>,
+//     T: AsRef<str>,
+//     Q: AsRef<str>,
+//     P: Fn(&str, bool) -> String,
+//     S: Fn(&str, &str, bool, bool) -> u8,
+// {
+//     let mut matches = extract_without_order(query, choices, processor, scorer, score_cutoff);
+//     match limit {
+//         None => {
+//             // Merge-sorts the matches.
+//             matches.sort();
+//             // TODO: Does this need to be reversed? It is reversed in the original implementation.
+//             // https://github.com/seatgeek/fuzzywuzzy/blob/master/fuzzywuzzy/process.py#L169
+//             matches.reverse();
+//             matches
+//         }
+//         Some(limit) => BinaryHeap::from(matches)
+//             .into_sorted_vec()
+//             .into_iter()
+//             .take(limit as usize)
+//             .collect(),
+//     }
+// }
+
+/// This convenience function takes a list of strings containing duplicates and uses fuzzy matching
+/// to identify and remove duplicates. Specifically, it uses the process.extract to identify
+/// duplicates that score greater than a user defined threshold. Then, it looks for the longest item
+/// in the duplicate list since we assume this item contains the most entity information and returns
+/// that. It breaks string length ties on an alphabetical sort.
+///
+/// NOTE: as the threshold DECREASES the number of duplicates that are found INCREASES. This means
+/// that the returned deduplicated list will likely be shorter. Raise the threshold for fuzzy_dedupe
+/// to be less sensitive.
+///
+/// Returns a de-duplicated list.
+/// ```
+/// # use fuzzywuzzy::process::dedupe;
+/// # use fuzzywuzzy::fuzz::token_set_ratio;
+/// let contains_dupes = vec![
+///     "Frodo Baggin",
+///     "Frodo Baggins",
+///     "F. Baggins",
+///     "Samwise G.",
+///     "Gandalf",
+///     "Bilbo Baggins",
+/// ];
+/// let expected_results = vec![
+///     "Frodo Baggins",
+///     "Samwise G.",
+///     "Bilbo Baggins",
+///     "Gandalf",
+/// ];
+/// assert_eq!(dedupe(contains_dupes, 70, &token_set_ratio, 0, None), expected_results);
+/// ```
+pub fn dedupe<T, I, S>(
+    contains_dupes: I,
+    threshold: u8,
+    scorer: S,
+    score_cutoff: u8,
+    limit: Option<u64>,
+) -> Vec<String>
+where
+    T: AsRef<str>,
+    I: IntoIterator<Item = T>,
+    S: Fn(&str, &str, bool, bool) -> u8,
+{
+    let mut extractor = Vec::new();
+    let contains_dupes = contains_dupes.into_iter().collect::<Vec<T>>();
+    for item in &contains_dupes {
+        let mut matches: Vec<Match> = extract(
+            item,
+            &contains_dupes,
+            full_process,
+            &scorer,
+            score_cutoff,
+            limit,
+        )
+        .into_iter()
+        .filter(|m| m.score() > threshold)
+        .collect();
+
+        if matches.len() != 1 {
+            // Sort alphabetically
+            matches.sort_by(|lhs, rhs| lhs.text.cmp(&rhs.text));
+            // Sort by descending length.
+            matches.sort_by(|lhs, rhs| lhs.text.len().cmp(&rhs.text.len()));
+            // The first match is now the "canonical example".
+        }
+
+        extractor.push(matches[0].text.clone())
+    }
+
+    // "Unique-ify the extracted matches.
+    let extractor: HashSet<String> = extractor.into_iter().map(String::from).collect();
+
+    // Check that the extracted matches differ from contain_dupes (e.g. duplicates were found).
+    // If not, then return the original list.
+    if extractor.len() == contains_dupes.len() {
+        contains_dupes
+            .into_iter()
+            .map(|x| x.as_ref().into())
+            .collect()
+    } else {
+        extractor.into_iter().collect()
+    }
 }
