@@ -1,14 +1,16 @@
 //! Segmenter trait and default implementations.
 //!
 //! Segmentation is how strings are split into tokens for comparison.
-//! For example, two strings that *visually appear* identical might have different byte-level representations.
+//! For example, two strings that *visually appear* identical might have
+//! different byte-level representations.
 //!
 //! Take `ä` and `ä`. Visually, these should be identical. However, the former
 //! is Unicode character [ä (U+00E4)](https://www.compart.com/en/unicode/U+00E4)
 //! while the latter is two adjacent Unicode characters [a (U+0061)](https://www.compart.com/en/unicode/U+0061)
 //! and [◌̈ (U+0308)](https://www.compart.com/en/unicode/U+0308).
 //!
-//! Depending on the [Segmenter] used, comparing these strings will return different results.
+//! Depending on the [Segmenter] used, comparing these strings will return
+//! different results.
 //!
 //! ```
 //! # use fuzzywuzzy::segmentation::{Segmenter, ByteSegmenter};
@@ -17,10 +19,13 @@
 //! // U+0061 + U+0308
 //! assert_eq!(ByteSegmenter.segment("ä"), vec![0x61u8, 0xccu8, 0x88u8]);
 //! ```
-//! Given this segmentation, we would expect a comparison to return 0% similarity because every byte is different!
+//! Given this segmentation, we would expect a comparison to return 0%
+//! similarity because every byte is different!
 //!
-//! However, even with more advanced segmentation strategies like [code point segmentation](CodePointSegmenter)
-//! or [grapheme segmentation](GraphemeSegmenter), these will still have 0% similarity by any comparison algorithm.
+//! However, even with more advanced segmentation strategies like [code point
+//! segmentation](CodePointSegmenter) or [grapheme
+//! segmentation](GraphemeSegmenter), these will still have 0% similarity by any
+//! comparison algorithm.
 //!
 //! ```
 //! # use fuzzywuzzy::segmentation::{Segmenter, CodePointSegmenter, GraphemeSegmenter};
@@ -34,13 +39,16 @@
 //! assert_ne!(GraphemeSegmenter.segment("ä"), GraphemeSegmenter.segment("ä"));
 //! ```
 //!
-//! In order to usefully compare strings like these, [normalization][crate::normalization] must be done prior to segmentation.
+//! In order to usefully compare strings like these,
+//! [normalization][crate::normalization] must be done prior to segmentation.
 
 /// Represents a strategy for segmenting a string into units for comparison.
 ///
-/// The trait is also implemented for functions matching the signature of the `segment` method.
+/// The trait is also implemented for functions matching the signature of the
+/// `segment` method.
 ///
-/// In addition to implementers of the trait, functions with a matching type signature also work.
+/// In addition to implementers of the trait, functions with a matching type
+/// signature also work.
 ///
 /// ```
 /// # use fuzzywuzzy::segmentation::{Segmenter, CodePointSegmenter};
@@ -53,7 +61,8 @@
 pub trait Segmenter<'a> {
     /// The type of the unit of comparison this strategy operates on.
     type Output: 'a + Eq;
-    /// Produces units of comparison from a string according to the segmentation strategy.
+    /// Produces units of comparison from a string according to the segmentation
+    /// strategy.
     fn segment(&self, s: &'a str) -> Vec<Self::Output>;
 }
 
@@ -76,20 +85,23 @@ impl<'a, F: Fn(&str) -> Vec<T>, T: 'a + Eq> Segmenter<'a> for F {
 pub struct ByteSegmenter;
 
 impl<'a> Segmenter<'a> for ByteSegmenter {
-    // Returns an owned `Vec<u8>` because allocating additional `u8`s is cheaper than pointers into the original string.
+    // Returns an owned `Vec<u8>` because allocating additional `u8`s is cheaper
+    // than pointers into the original string.
     type Output = u8;
     fn segment(&self, s: &'a str) -> Vec<Self::Output> {
         s.as_bytes().iter().copied().collect()
     }
 }
 
-/// A strategy for segmenting strings into their constituent Unicode code points.
+/// A strategy for segmenting strings into their constituent Unicode code
+/// points.
 ///
 /// Internally, this is just `s.chars().collect()`.
 ///
-/// Note that `char` is a Unicode Scalar Value which is a subset of Unicode code points disallowing surrogates.
-/// UTF-8, which all Rust strings are guaranteed to be, also disallows surrogates.
-/// So all of the Unicode Scalar Values produced here are UTF-8 code points.
+/// Note that `char` is a Unicode Scalar Value which is a subset of Unicode code
+/// points disallowing surrogates. UTF-8, which all Rust strings are guaranteed
+/// to be, also disallows surrogates. So all of the Unicode Scalar Values
+/// produced here are UTF-8 code points.
 ///
 /// ```
 /// # use fuzzywuzzy::segmentation::{Segmenter, CodePointSegmenter};
@@ -110,6 +122,28 @@ impl<'a> Segmenter<'a> for CodePointSegmenter {
     }
 }
 
+// TODO: document
+pub struct WhitespaceSegmenter;
+
+impl<'a> Segmenter<'a> for WhitespaceSegmenter {
+    type Output = &'a str;
+    fn segment(&self, s: &'a str) -> Vec<Self::Output> {
+        s.split_whitespace().collect()
+    }
+}
+
+// TODO: document
+pub struct SortedWhitespaceSegmenter;
+
+impl<'a> Segmenter<'a> for SortedWhitespaceSegmenter {
+    type Output = &'a str;
+    fn segment(&self, s: &'a str) -> Vec<Self::Output> {
+        let mut v: Vec<_> = s.split_whitespace().collect();
+        v.sort_unstable();
+        v
+    }
+}
+
 #[cfg(feature = "segmentation")]
 pub use self::unicode_segmenters::*;
 
@@ -118,7 +152,8 @@ mod unicode_segmenters {
     use super::Segmenter;
     use unicode_segmentation::UnicodeSegmentation;
 
-    /// A strategy for segmenting strings into their constituent Unicode graphemes. Requires default feature "segmentation".
+    /// A strategy for segmenting strings into their constituent Unicode
+    /// graphemes. Requires default feature "segmentation".
     ///
     /// This just delegates to [unicode_segmentation].
     ///
@@ -138,6 +173,16 @@ mod unicode_segmenters {
         type Output = &'a str;
         fn segment(&self, s: &'a str) -> Vec<Self::Output> {
             s.graphemes(true).collect()
+        }
+    }
+
+    // TODO: document
+    pub struct UnicodeWordSegmenter;
+
+    impl<'a> Segmenter<'a> for UnicodeWordSegmenter {
+        type Output = &'a str;
+        fn segment(&self, s: &'a str) -> Vec<Self::Output> {
+            s.split_word_bounds().collect()
         }
     }
 }

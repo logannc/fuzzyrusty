@@ -17,12 +17,14 @@
 //! assert_eq!(multiple_normalizers.normalize(a3), a1);
 //! ```
 
-/// Represents a strategy for normalizing string characters into a canonical value of their equivalence class.
+/// Represents a strategy for normalizing string characters into a canonical
+/// value of their equivalence class.
 ///
-/// i.e., in a case-insensitive context, 'a' might be the canonical value for the equivalence class of ASCII A's: `['a', 'A']`.
+/// i.e., in a case-insensitive context, 'a' might be the canonical value for
+/// the equivalence class of ASCII A's: `['a', 'A']`.
 ///
-/// In addition to implementers of the trait, functions with a matching type signature also work.
-/// ```
+/// In addition to implementers of the trait, functions with a matching type
+/// signature also work. ```
 /// # use fuzzywuzzy::normalization::{Normalizer, LowerCaseNormalizer};
 /// let test_string = "test STRING";
 /// fn custom_normalizer(s: &str) -> String { s.to_lowercase() }
@@ -121,6 +123,53 @@ impl Normalizer for AsciiOnlyNormalizer {
     }
 }
 
+/// Replaces sequences of characters that are not letters or numbers with a
+/// single space.
+///
+/// Note, for compatibility with Python's fuzzywuzzy which internally uses the
+/// `\W` regex character class, we include underscore (`'_'`) as a
+/// letter/number.
+///
+/// There might be other unknown differences between Python's `re` module's
+/// implementation of `\W` and Rust's implementation of [char::is_alphanumeric].
+/// ```
+/// # use fuzzywuzzy::normalization::{Normalizer, SplittingAlphanumericNormalizer};
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("abc   123"), "abc   123");
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("abc!!!123"), "abc   123");
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("   abc123"), "   abc123");
+/// // Some codepoints like common diacritics are removed.
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("a\u{0308}bc"), "a bc");
+/// // But single-character codepoints like U+00E4 are not.
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("äbc"), "äbc");
+/// // Known incompatibility: Python's fuzzywuzzy converts the combining characters below,
+/// // but Rust considers them to be alphabetic characters so they are not.
+/// // Future versions of fuzzywuzzy-rs may add a new normalizer to handle this.
+/// // assert_eq!(FutureCompatibilityNormalizer.normalize("abcØØØकिमपि"), "abcØØØक मप ");
+/// assert_eq!(SplittingAlphanumericNormalizer.normalize("abcØØØकिमपि"), "abcØØØकिमपि");
+/// ```
+pub struct SplittingAlphanumericNormalizer;
+
+// Take care when editing this as
+// `replace_non_letters_non_numbers_with_whitespace` delegates to this.
+impl Normalizer for SplittingAlphanumericNormalizer {
+    fn normalize(&self, s: &str) -> String {
+        s.split(|c: char| !(c == '_' || c.is_alphanumeric()))
+            .intersperse(" ")
+            .collect()
+    }
+}
+
+// TODO: document
+pub struct WhitespaceSplitSortedTokenNormalizer;
+
+impl Normalizer for WhitespaceSplitSortedTokenNormalizer {
+    fn normalize(&self, s: &str) -> String {
+        let mut v: Vec<_> = s.split_whitespace().collect();
+        v.sort_unstable();
+        v.join(" ")
+    }
+}
+
 #[cfg(feature = "segmentation")]
 pub use self::unicode_normalizers::*;
 
@@ -129,9 +178,11 @@ mod unicode_normalizers {
     use super::Normalizer;
     use unicode_normalization::UnicodeNormalization;
 
-    /// Performs Unicode Normalization Form C (canonical decomposition followed by canonical composition). Requires default feature "normalization".
+    /// Performs Unicode Normalization Form C (canonical decomposition followed
+    /// by canonical composition). Requires default feature "normalization".
     ///
-    /// This just delegates to [unicode_normalization::UnicodeNormalization::nfc].
+    /// This just delegates to
+    /// [unicode_normalization::UnicodeNormalization::nfc].
     ///
     /// ```
     /// # use fuzzywuzzy::normalization::{Normalizer, FormCNormalizer};
@@ -148,9 +199,12 @@ mod unicode_normalizers {
         }
     }
 
-    /// Performs Unicode Normalization Form KC (compatibility decomposition followed by canonical composition). Requires default feature "normalization".
+    /// Performs Unicode Normalization Form KC (compatibility decomposition
+    /// followed by canonical composition). Requires default feature
+    /// "normalization".
     ///
-    /// This just delegates to [unicode_normalization::UnicodeNormalization::nfkc].
+    /// This just delegates to
+    /// [unicode_normalization::UnicodeNormalization::nfkc].
     ///
     /// ```
     /// # use fuzzywuzzy::normalization::{Normalizer, FormKCNormalizer};
@@ -167,9 +221,11 @@ mod unicode_normalizers {
         }
     }
 
-    /// Performs Unicode Normalization Form D (canonical decomposition). Requires default feature "normalization".
+    /// Performs Unicode Normalization Form D (canonical decomposition).
+    /// Requires default feature "normalization".
     ///
-    /// This just delegates to [unicode_normalization::UnicodeNormalization::nfd].
+    /// This just delegates to
+    /// [unicode_normalization::UnicodeNormalization::nfd].
     ///
     /// ```
     /// # use fuzzywuzzy::normalization::{Normalizer, FormDNormalizer};
@@ -183,9 +239,11 @@ mod unicode_normalizers {
         }
     }
 
-    /// Performs Unicode Normalization Form KD (compatibility decomposition). Requires default feature "normalization".
+    /// Performs Unicode Normalization Form KD (compatibility decomposition).
+    /// Requires default feature "normalization".
     ///
-    /// This just delegates to [unicode_normalization::UnicodeNormalization::nfkd].
+    /// This just delegates to
+    /// [unicode_normalization::UnicodeNormalization::nfkd].
     ///
     /// ```
     /// # use fuzzywuzzy::normalization::{Normalizer, FormKDNormalizer};
@@ -199,11 +257,17 @@ mod unicode_normalizers {
         }
     }
 
-    /// Performs CJK Compatibility Ideograph-to-Standarized Variation Sequence normalization. Requires default feature "normalization".
+    /// Performs CJK Compatibility Ideograph-to-Standarized Variation Sequence
+    /// normalization. Requires default feature "normalization".
     ///
-    /// This just delegates to [unicode_normalization::UnicodeNormalization::cjk_compat_variants].
+    /// This just delegates to
+    /// [unicode_normalization::UnicodeNormalization::cjk_compat_variants].
     ///
-    /// > "This is not part of the canonical or compatibility decomposition algorithms, but performing it before those algorithms produces normalized output which better preserves the intent of the original text." -- [unicode_normalization](unicode_normalization::UnicodeNormalization::cjk_compat_variants)
+    /// > "This is not part of the canonical or compatibility decomposition
+    /// algorithms, but performing it before those algorithms produces
+    /// normalized output which better preserves the intent of the original
+    /// text." -- [unicode_normalization](unicode_normalization::
+    /// UnicodeNormalization::cjk_compat_variants)
     pub struct CJKNormalizer;
     impl Normalizer for CJKNormalizer {
         fn normalize(&self, s: &str) -> String {
@@ -211,10 +275,12 @@ mod unicode_normalizers {
         }
     }
 
-    /// Decomposes a string, then removes non-ascii code points. Requires default feature "normalization".
+    /// Decomposes a string, then removes non-ascii code points. Requires
+    /// default feature "normalization".
     ///
     /// Caution is needed when applying this [Normalizer].
-    /// While it may improve Latin-script based language comparisons because they can often decompose largely into ASCII + diacritics,
+    /// While it may improve Latin-script based language comparisons because
+    /// they can often decompose largely into ASCII + diacritics,
     /// it will perform poorly on less ASCII-centric languages.
     ///
     /// ```
