@@ -1,8 +1,64 @@
 //! Convenience methods to process fuzzy matching queries for common use cases.
 
+use std::cmp::Ordering;
+
+/// All of the convenience methods in the `process` module return thresholded scores. A score
+/// is a set of text which was compared against the list of choices by the provided scoring function,
+/// along with the score produced by the scoring function.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Score {
+    text: String,
+    score: u8,
+}
+
+impl Score {
+    pub fn new<V: AsRef<str>>(text: V, score: u8) -> Self {
+        Self {
+            text: text.as_ref().to_string(),
+            score,
+        }
+    }
+
+    pub fn score(&self) -> u8 {
+        self.score
+    }
+
+    pub fn text(&self) -> &str {
+        self.text.as_str()
+    }
+}
+
+/// Score ordering is based on the ordering of the underlying integer scores.
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.cmp(&other.score())
+    }
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.score.partial_cmp(&other.score())
+    }
+}
+
+/// Convenience trait `impl` for converting `("text", 100)` to `Score { text: "text".into(), score: 100 }`.
+impl<V: AsRef<str>> From<(V, u8)> for Score {
+    fn from((text, score): (V, u8)) -> Self {
+        Self::new(text, score)
+    }
+}
+
+/// Convenience trait `impl` for comparing `("text", 100)` with `Score { text: "text".into(), score: 100 }`.
+impl<V: AsRef<str>> PartialEq<(V, u8)> for Score {
+    fn eq(&self, other: &(V, u8)) -> bool {
+        let other_choice = Score::new(other.0.as_ref(), other.1);
+        self.eq(&other_choice)
+    }
+}
+
 /// Score multiple options against a base query string and return all exceeding a cutoff.
 ///
-/// Returns a Vec with the options and their match score if their score is above the cutoff.
+/// Returns a Vec with the options and their query score if their score is above the cutoff.
 /// Results are configurable using custom text processors and scorers.
 /// Good default choices are `utils::full_process` as the processor, `fuzz:wratio` as the scorer, and zero as the score_cutoff.
 ///
@@ -30,20 +86,21 @@
 ///         0),
 ///     expected_results);
 /// ```
-pub fn extract_without_order<I, T, P, S>(
-    query: &str,
+pub fn extract_without_order<I, T, P, S, Q>(
+    query: Q,
     choices: I,
     processor: P,
     scorer: S,
     score_cutoff: u8,
-) -> Vec<(String, u8)>
+) -> Vec<Score>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    Q: AsRef<str>,
     P: Fn(&str, bool) -> String,
     S: Fn(&str, &str, bool, bool) -> u8,
 {
-    let processed_query: String = processor(query, false);
+    let processed_query: String = processor(query.as_ref(), false);
     if processed_query.is_empty() {
         // TODO: Make warning configurable, instead of being printed by default.
         // println!("Applied processor reduces input query to empty string, all comparisons will have score 0. [Query: '{0}']", processed_query.as_str());
@@ -58,7 +115,7 @@ where
         let processed: String = processor(choice.as_ref(), false);
         let score: u8 = scorer(processed_query.as_str(), processed.as_str(), true, true);
         if score >= score_cutoff {
-            results.push((choice.as_ref().to_string(), score))
+            results.push(Score::new(choice, score))
         }
     }
     results
@@ -86,7 +143,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[0]
 /// );
 /// assert_eq!(
@@ -95,7 +152,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[3]
 /// );
 /// assert_eq!(
@@ -104,7 +161,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[2]
 /// );
 /// assert_eq!(
@@ -113,7 +170,7 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[2]
 /// );
 /// assert_eq!(
@@ -122,24 +179,25 @@ where
 ///       choices.iter(),
 ///       &full_process,
 ///       &wratio,
-///       0).unwrap().0,
+///       0).unwrap().text(),
 ///    choices[0]
 /// );
 /// ```
-pub fn extract_one<I, T, P, S>(
-    query: &str,
+pub fn extract_one<I, T, P, S, Q>(
+    query: Q,
     choices: I,
     processor: P,
     scorer: S,
     score_cutoff: u8,
-) -> Option<(String, u8)>
+) -> Option<Score>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    Q: AsRef<str>,
     P: Fn(&str, bool) -> String,
     S: Fn(&str, &str, bool, bool) -> u8,
 {
-    let best = extract_without_order(query, choices, processor, scorer, score_cutoff);
+    let best = extract_without_order(query.as_ref(), choices, processor, scorer, score_cutoff);
     if best.is_empty() {
         return None;
     }
@@ -153,5 +211,5 @@ where
         // original ordering of `choices` is returned (as this is the behavior of fuzzywuzzy).
         .rev()
         .cloned()
-        .max_by(|(_, acc_score), (_, score)| acc_score.cmp(score))
+        .max_by(|acc_match, other_match| acc_match.score().cmp(&other_match.score()))
 }
